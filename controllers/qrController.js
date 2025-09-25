@@ -1,0 +1,95 @@
+const User = require('../models/User');
+const Connection = require('../models/Connection');
+const mongoose = require('mongoose');
+
+// Scan QR code and create connection
+exports.scanQRCode = async (req, res) => {
+  try {
+    const { qrCode } = req.body;
+    const currentUserId = req.user.id;
+
+    console.log('QR Code scan request received');
+
+    // Find user by QR code
+    const targetUser = await User.findOne({ qrCode }).select('_id name username');
+    console.log('Target user found:', !!targetUser);
+
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if trying to connect with self
+    if (targetUser._id.toString() === currentUserId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot connect with yourself'
+      });
+    }
+
+    // Check if connection already exists
+    const existingConnection = await Connection.findOne({
+      users: { $all: [currentUserId, targetUser._id] }
+    });
+
+    if (existingConnection) {
+      return res.status(400).json({
+        success: false,
+        message: 'Connection already exists'
+      });
+    }
+
+    // Create new connection
+    const connection = new Connection({
+      users: [currentUserId, targetUser._id],
+      status: 'connected',
+      metadata: {
+        connectionType: 'qr',
+        connectionDate: new Date()
+      }
+    });
+
+    await connection.save();
+
+    // Emit socket event for real-time updates
+    if (req.app.get('io')) {
+              // Notify both users about the new connection
+        [currentUserId, targetUser._id].forEach(userId => {
+          console.log('[SOCKET_DEBUG] IO instance available for newConnection (qr):', !!req.app.get('io'));
+          console.log('[SOCKET_DEBUG] IO engine clients count:', req.app.get('io')?.engine?.clientsCount);
+          req.app.get('io').to(`user:${userId}`).emit('newConnection', {
+          connectionId: connection._id,
+          connectedUser: userId.toString() === currentUserId ? {
+            _id: targetUser._id,
+            name: targetUser.name,
+            username: targetUser.username
+          } : {
+            _id: req.user._id,
+            name: req.user.name,
+            username: req.user.username
+          }
+        });
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Connection created successfully',
+      connection: {
+        _id: connection._id,
+        users: [req.user, targetUser],
+        status: connection.status,
+        metadata: connection.metadata
+      }
+    });
+  } catch (error) {
+    console.error('Error scanning QR code:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error scanning QR code',
+      error: error.message
+    });
+  }
+}; 

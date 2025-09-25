@@ -1,0 +1,181 @@
+const express = require('express');
+const router = express.Router();
+const locationController = require('../controllers/locationController');
+const enhancedLocationController = require('../controllers/enhancedLocationController');
+const { protect: auth } = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+
+// Configure multer for image uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/locations/');
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'location-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
+  }
+});
+
+// Mark a location (bus station or hotel) - ENHANCED with personal/group support
+router.post('/mark', auth, upload.array('images', 1), enhancedLocationController.markLocation);
+
+// Mark a personal location (for members)
+router.post('/mark-personal', auth, upload.array('images', 1), enhancedLocationController.markLocation);
+
+// Get enhanced marked locations with priority logic
+router.get('/enhanced/:connectionId', auth, enhancedLocationController.getMarkedLocations);
+
+// Handle ownership transfer
+router.post('/transfer-ownership', auth, enhancedLocationController.handleOwnershipTransfer);
+
+// Update user location (for real-time tracking)
+router.post('/', auth, async (req, res) => {
+  try {
+    const { latitude, longitude, connectionId } = req.body;
+    const userId = req.user.id; // Fixed: use req.user.id instead of req.user.userId
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
+      });
+    }
+    
+    // ENHANCED: Now updates both memory and database
+    const updatedLocation = await locationController.updateUserLocation(userId, {
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      timestamp: Date.now()
+    }, connectionId); // Pass connectionId for database storage
+    
+    res.json({
+      success: true,
+      message: 'Location updated successfully',
+      location: updatedLocation
+    });
+  } catch (error) {
+    console.error('[LOCATION_UPDATE] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update location'
+    });
+  }
+});
+
+// Get marked locations for a connection
+router.get('/marked/:connectionId', auth, locationController.getMarkedLocations);
+
+// Update a marked location
+router.put('/marked/:locationId', auth, upload.array('images', 2), locationController.updateMarkedLocation);
+
+// Delete a marked location
+router.delete('/marked/:locationId', auth, enhancedLocationController.deleteMarkedLocation);
+
+// Mark user as offline
+router.post('/offline', auth, (req, res) => {
+  try {
+    const userId = req.user.id; // Fixed: use req.user.id instead of req.user.userId
+    const updatedLocation = locationController.markUserOffline(userId);
+    
+    res.json({
+      success: true,
+      message: 'User marked as offline',
+      location: updatedLocation
+    });
+  } catch (error) {
+    console.error('[OFFLINE_ROUTE] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark user as offline'
+    });
+  }
+});
+
+// Get all user locations in a group connection
+router.get('/group/:connectionId', auth, locationController.getGroupLocations);
+
+// Test endpoint to check database connectivity and model
+router.get('/test-db', auth, async (req, res) => {
+  try {
+    const { ConnectionLocation } = require('../models/Location');
+    
+    // Test basic model functionality
+    const testResult = {
+      modelExists: !!ConnectionLocation,
+      modelName: ConnectionLocation?.modelName,
+      modelType: typeof ConnectionLocation,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Test database connection by counting documents
+    if (ConnectionLocation) {
+      try {
+        const count = await ConnectionLocation.countDocuments();
+        testResult.documentCount = count;
+        testResult.databaseConnected = true;
+      } catch (dbError) {
+        testResult.databaseConnected = false;
+        testResult.databaseError = dbError.message;
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Database test completed',
+      result: testResult
+    });
+  } catch (error) {
+    console.error('[TEST_DB] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Database test failed',
+      error: error.message
+    });
+  }
+});
+
+// NEW: Get connection location history and analytics
+router.get('/connection/:connectionId/history', auth, locationController.getConnectionLocationHistory);
+
+// NEW: Clean up old location data (maintenance function)
+router.delete('/cleanup', auth, locationController.cleanupOldLocations);
+
+// Get a specific user's location
+router.get('/user/:userId', auth, locationController.getUserLocation);
+
+// NEW: Get memory status for debugging and monitoring
+router.get('/memory-status', auth, (req, res) => {
+  try {
+    const memoryStats = locationController.getMemoryStatus();
+    res.json({
+      success: true,
+      message: 'Memory status retrieved successfully',
+      memoryStats,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[MEMORY_STATUS] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get memory status',
+      error: error.message
+    });
+  }
+});
+
+module.exports = router;

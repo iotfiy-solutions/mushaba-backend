@@ -1,0 +1,835 @@
+const Chat = require('../models/Chat');
+const Message = require('../models/Message');
+const User = require('../models/User');
+const mongoose = require('mongoose');
+
+const MAX_AUDIO_SIZE = 3 * 1024 * 1024; // 3MB in bytes
+const MAX_AUDIO_DURATION = 30; // 30 seconds
+
+// Get all chats for current user
+const getChats = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const chats = await Chat.find({
+      'participants.userId': userId,
+      'participants.status': 'active'
+    })
+    .populate('participants.userId', 'name username')
+    .populate('lastMessage')
+    .sort({ 'metadata.lastActivity': -1 })
+    .lean();
+
+    res.json({
+      success: true,
+      chats
+    });
+  } catch (error) {
+    console.error('Error fetching chats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching chats',
+      error: error.message
+    });
+  }
+};
+
+// Create a new chat (private or group)
+const createChat = async (req, res) => {
+  try {
+    console.log('Create chat - Request body:', req.body);
+    console.log('Create chat - User:', req.user);
+    
+    const { type, participants, name, description } = req.body;
+    const currentUserId = req.user.id;
+
+    console.log('Create chat - Current user ID:', currentUserId);
+    console.log('Create chat - Participants:', participants);
+
+    // Validate participants
+    if (!participants || !Array.isArray(participants)) {
+      console.log('Create chat - Invalid participants:', participants);
+      return res.status(400).json({
+        success: false,
+        message: 'Participants must be an array'
+      });
+    }
+
+    // Validate participant IDs
+    const validParticipants = participants.filter(p => mongoose.Types.ObjectId.isValid(p));
+    if (validParticipants.length !== participants.length) {
+      console.log('Create chat - Invalid participant IDs:', participants);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid participant IDs'
+      });
+    }
+
+    // Add current user to participants
+    const allParticipants = [
+      { userId: currentUserId, role: 'owner', status: 'active' },
+      ...validParticipants.map(p => ({ userId: p, role: 'member', status: 'active' }))
+    ];
+
+    console.log('Create chat - All participants:', allParticipants);
+
+    // For private chats, check if chat already exists
+    if (type === 'private' && validParticipants.length === 1) {
+      const existingChat = await Chat.findOne({
+        type: 'private',
+        'participants.userId': { $all: [currentUserId, validParticipants[0]] },
+        'participants.status': 'active'
+      }).populate('participants.userId', 'name username');
+
+      console.log('Create chat - Existing private chat:', existingChat);
+
+      if (existingChat) {
+        return res.json({
+          success: true,
+          chat: existingChat
+        });
+      }
+    }
+
+    // For group chats, check if a group chat with the same participants already exists
+    if (type === 'group') {
+      // Sort participant IDs for consistent comparison
+      const sortedParticipantIds = [...validParticipants, currentUserId].sort();
+      
+      const existingGroupChat = await Chat.findOne({
+        type: 'group',
+        'participants.userId': { $all: sortedParticipantIds },
+        'participants.status': 'active'
+      }).populate('participants.userId', 'name username');
+
+      console.log('Create chat - Existing group chat:', existingGroupChat);
+
+      if (existingGroupChat) {
+        return res.json({
+          success: true,
+          chat: existingGroupChat
+        });
+      }
+    }
+
+    // Create new chat
+    const chat = new Chat({
+      type,
+      participants: allParticipants,
+      metadata: {
+        name: type === 'group' ? name : undefined,
+        description: type === 'group' ? description : undefined,
+        lastActivity: new Date()
+      }
+    });
+
+    console.log('Create chat - New chat object:', chat);
+
+    await chat.save();
+
+    // Populate participants
+    await chat.populate('participants.userId', 'name username');
+
+    console.log('Create chat - Saved chat:', chat);
+
+    res.status(201).json({
+      success: true,
+      chat
+    });
+  } catch (error) {
+    console.error('Error creating chat:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error creating chat',
+      error: error.message
+    });
+  }
+};
+
+// Get chat messages
+const getMessages = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    const userId = req.user.id;
+
+    console.log('Fetching messages for chat:', chatId);
+
+    // Check if user is part of the chat
+    const chat = await Chat.findOne({
+      _id: chatId,
+      'participants.userId': userId,
+      'participants.status': 'active'
+    });
+
+    if (!chat) {
+      console.log('Chat not found:', chatId);
+      return res.status(404).json({
+        success: false,
+        message: 'Chat not found'
+      });
+    }
+
+    // Get messages with proper population
+    const messages = await Message.find({ chatId })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .populate('sender', 'name username')
+      .populate('replyTo')
+      .lean();
+
+    // Format messages to ensure content is properly structured
+    const formattedMessages = messages.map(msg => {
+      const formattedMsg = {
+        ...msg,
+        content: msg.content || {}
+      };
+
+      // Ensure content has the correct structure based on type
+      if (msg.type === 'text') {
+        formattedMsg.content = {
+          text: msg.content?.text || ''
+        };
+      } else if (msg.type === 'image') {
+        formattedMsg.content = {
+          name: msg.content?.name || ''
+        };
+
+        // Handle image data
+        if (msg.content?.data) {
+          console.log('Image message found, converting to base64');
+          formattedMsg.content.data = msg.content.data.toString('base64');
+          formattedMsg.content.mimeType = msg.content.mimeType || 'image/jpeg';
+          formattedMsg.content.width = msg.content.width || 0;
+          formattedMsg.content.height = msg.content.height || 0;
+        }
+      } else if (msg.type === 'location') {
+        formattedMsg.content = {
+          name: msg.content?.name || '',
+          address: msg.content?.address || '',
+          coordinates: msg.content?.coordinates || {
+            latitude: 0,
+            longitude: 0
+          }
+        };
+
+        // Handle location with image
+        if (msg.content?.image && msg.content.image.data) {
+          console.log('Location message with image found, converting to base64');
+          console.log('Original image data type:', typeof msg.content.image.data);
+          console.log('Original image data length:', msg.content.image.data.length);
+          formattedMsg.content.image = {
+            data: msg.content.image.data.toString('base64'),
+            mimeType: msg.content.image.mimeType || 'image/jpeg',
+            width: msg.content.image.width || 0,
+            height: msg.content.image.height || 0
+          };
+          console.log('Converted image data length:', formattedMsg.content.image.data.length);
+        } else {
+          console.log('Location message without image or missing image data');
+        }
+      }
+
+      return formattedMsg;
+    });
+
+    console.log('Formatted messages:', formattedMessages.map(m => ({
+      id: m._id,
+      type: m.type,
+      content: m.content,
+      sender: m.sender
+    })));
+
+    res.json({
+      success: true,
+      messages: formattedMessages.reverse()
+    });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching messages',
+      error: error.message
+    });
+  }
+};
+
+// Send a message
+const sendMessage = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { type, content, metadata, replyTo } = req.body;
+    const senderId = req.user.id;
+
+    console.log('Sending message - Request:', {
+      chatId,
+      type,
+      content,
+      metadata,
+      replyTo,
+      senderId
+    });
+
+    // Check if user is part of the chat
+    const chat = await Chat.findOne({
+      _id: chatId,
+      'participants.userId': senderId,
+      'participants.status': 'active'
+    });
+
+    if (!chat) {
+      console.log('Chat not found:', chatId);
+      return res.status(404).json({
+        success: false,
+        message: 'Chat not found'
+      });
+    }
+
+    // Create message with proper content structure
+    const messageData = {
+      chatId,
+      sender: senderId,
+      type,
+      content: {},
+      metadata,
+      replyTo
+    };
+
+    // Set content based on message type
+    switch (type) {
+      case 'text':
+        if (!content || !content.text) {
+          return res.status(400).json({
+            success: false,
+            message: 'Text message must have content.text'
+          });
+        }
+        messageData.content = {
+          text: content.text
+        };
+        break;
+
+      case 'voice':
+        if (!content || !content.data) {
+          return res.status(400).json({
+            success: false,
+            message: 'Voice message must have content.data'
+          });
+        }
+
+        // Validate audio size
+        const audioSize = Buffer.from(content.data, 'base64').length;
+        if (audioSize > MAX_AUDIO_SIZE) {
+          return res.status(400).json({
+            success: false,
+            message: `Audio file too large. Maximum size is ${MAX_AUDIO_SIZE / 1024 / 1024}MB`
+          });
+        }
+
+        // Validate duration
+        if (content.duration > MAX_AUDIO_DURATION) {
+          return res.status(400).json({
+            success: false,
+            message: `Audio duration too long. Maximum duration is ${MAX_AUDIO_DURATION} seconds`
+          });
+        }
+
+        messageData.content = {
+          data: Buffer.from(content.data, 'base64'),
+          mimeType: content.mimeType || 'audio/m4a',
+          duration: content.duration
+        };
+        messageData.metadata = {
+          ...metadata,
+          size: audioSize,
+          duration: content.duration,
+          mimeType: content.mimeType || 'audio/m4a'
+        };
+        break;
+
+      case 'image':
+        if (!content || !content.data) {
+          return res.status(400).json({
+            success: false,
+            message: 'Image message must have content.data'
+          });
+        }
+
+        // Validate image data
+        const imageData = content.data;
+        const imageBuffer = Buffer.from(imageData, 'base64');
+        const imageSize = imageBuffer.length;
+        
+        // Check image size (max 5MB)
+        const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+        if (imageSize > MAX_IMAGE_SIZE) {
+          return res.status(400).json({
+            success: false,
+            message: `Image too large. Maximum size is ${MAX_IMAGE_SIZE / 1024 / 1024}MB`
+          });
+        }
+
+        messageData.content = {
+          data: imageBuffer,
+          mimeType: content.mimeType || 'image/jpeg',
+          width: content.width || 0,
+          height: content.height || 0
+        };
+
+        messageData.metadata = {
+          ...metadata,
+          size: imageSize,
+          mimeType: content.mimeType || 'image/jpeg'
+        };
+        break;
+
+      case 'location':
+        if (!content || !content.coordinates) {
+          return res.status(400).json({
+            success: false,
+            message: 'Location message must have coordinates'
+          });
+        }
+
+        messageData.content = {
+          name: content.name || 'Shared Location',
+          address: content.address || '',
+          coordinates: {
+            latitude: content.coordinates.latitude || content.coordinates.lat,
+            longitude: content.coordinates.longitude || content.coordinates.lng
+          }
+        };
+
+        // Handle location with image
+        if (content.image && content.image.data) {
+          console.log('Location message with image detected');
+          console.log('Received image data type:', typeof content.image.data);
+          console.log('Received image data length:', content.image.data.length);
+          console.log('Received image data preview:', content.image.data.substring(0, 50) + '...');
+          
+          // Validate image data
+          const imageData = content.image.data;
+          const imageBuffer = Buffer.from(imageData, 'base64');
+          const imageSize = imageBuffer.length;
+          
+          console.log('Image buffer size:', imageSize);
+          
+          // Check image size (max 5MB)
+          const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+          if (imageSize > MAX_IMAGE_SIZE) {
+            return res.status(400).json({
+              success: false,
+              message: `Image too large. Maximum size is ${MAX_IMAGE_SIZE / 1024 / 1024}MB`
+            });
+          }
+
+          messageData.content.image = {
+            data: imageBuffer,
+            mimeType: content.image.mimeType || 'image/jpeg',
+            width: content.image.width || 0,
+            height: content.image.height || 0
+          };
+
+          messageData.metadata = {
+            ...metadata,
+            size: imageSize,
+            mimeType: content.image.mimeType || 'image/jpeg'
+          };
+          
+          console.log('Image saved to messageData with buffer size:', messageData.content.image.data.length);
+        } else {
+          console.log('Location message without image or missing image data');
+        }
+        break;
+
+      case 'customLocation':
+        if (!content || !content.coordinates || !content.name) {
+          return res.status(400).json({
+            success: false,
+            message: 'Custom location message must have coordinates and name'
+          });
+        }
+
+        messageData.content = {
+          name: content.name,
+          coordinates: {
+            latitude: content.coordinates.latitude,
+            longitude: content.coordinates.longitude
+          },
+          icon: content.icon || 'location',
+          comment: content.comment || '',
+          images: content.images || [],
+          pinLocationId: content.pinLocationId
+        };
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: `Unsupported message type: ${type}`
+        });
+    }
+
+    console.log('Creating message with data:', {
+      ...messageData,
+      content: {
+        ...messageData.content,
+        data: messageData.content.data ? '[Binary Data]' : undefined
+      }
+    });
+
+    const message = new Message(messageData);
+    await message.save();
+
+    // Update chat's last activity
+    chat.metadata.lastActivity = new Date();
+    await chat.save();
+
+    // Populate sender info before sending response
+    const populatedMessage = await Message.findById(message._id)
+      .populate('sender', 'name username profilePicture')
+      .lean();
+
+    // Convert Buffer to base64 for response
+    if (populatedMessage.content.data) {
+      populatedMessage.content.data = populatedMessage.content.data.toString('base64');
+    }
+
+    // Convert location image Buffer to base64 for response
+    if (populatedMessage.content.image && populatedMessage.content.image.data) {
+      console.log('[SOCKET_DEBUG] Converting location image Buffer to base64 for socket emission');
+      console.log('[SOCKET_DEBUG] Original image buffer size:', populatedMessage.content.image.data.length);
+      populatedMessage.content.image.data = populatedMessage.content.image.data.toString('base64');
+      console.log('[SOCKET_DEBUG] Converted image data length:', populatedMessage.content.image.data.length);
+    } else {
+      console.log('[SOCKET_DEBUG] No location image found in populated message');
+    }
+
+    // Emit socket event
+    const io = req.app.get('io');
+    if (io) {
+      console.log('[SOCKET_DEBUG] Emitting socket event for message type:', type);
+      console.log('[SOCKET_DEBUG] Message has image:', !!populatedMessage.content?.image);
+      console.log('[SOCKET_DEBUG] Image data present:', !!populatedMessage.content?.image?.data);
+      
+      io.to(chatId).emit('newMessage', {
+        chatId,
+        message: populatedMessage
+      });
+    }
+
+    res.json({
+      success: true,
+      message: populatedMessage
+    });
+  } catch (error) {
+    console.error('Error sending message:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error sending message',
+      error: error.message
+    });
+  }
+};
+
+// Mark messages as read
+const markAsRead = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const userId = req.user.id;
+
+    // Check if user is part of the chat
+    const chat = await Chat.findOne({
+      _id: chatId,
+      'participants.userId': userId,
+      'participants.status': 'active'
+    });
+
+    if (!chat) {
+      return res.status(404).json({
+        success: false,
+        message: 'Chat not found'
+      });
+    }
+
+    // Update unread messages
+    await Message.updateMany(
+      {
+        chatId,
+        'readBy.userId': { $ne: userId }
+      },
+      {
+        $push: {
+          readBy: {
+            userId,
+            readAt: new Date()
+          }
+        },
+        $set: { status: 'read' }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Messages marked as read'
+    });
+  } catch (error) {
+    console.error('Error marking messages as read:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking messages as read',
+      error: error.message
+    });
+  }
+};
+
+const getLastImageMessage = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    console.log('[IMAGE_DEBUG] Fetching last image for chatId:', chatId);
+    
+    const lastImageMsg = await Message.findOne({ chatId, type: 'image' })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    console.log('[IMAGE_DEBUG] Found image message:', lastImageMsg ? {
+      _id: lastImageMsg._id,
+      type: lastImageMsg.type,
+      createdAt: lastImageMsg.createdAt
+    } : 'null');
+    
+    if (!lastImageMsg) {
+      console.log('[IMAGE_DEBUG] No image message found');
+      return res.json({ success: true, image: null });
+    }
+    
+    let imageUrl = lastImageMsg.content.url;
+    
+    // Log the content structure to debug
+    console.log('[IMAGE_DEBUG] Image content structure:', {
+      hasUrl: !!lastImageMsg.content.url,
+      hasData: !!lastImageMsg.content.data,
+      urlLength: lastImageMsg.content.url ? lastImageMsg.content.url.length : 0,
+      dataType: typeof lastImageMsg.content.data
+    });
+    
+    // If we have a URL and it's not base64, use it
+    if (imageUrl && imageUrl !== '' && !imageUrl.startsWith('data:')) {
+      console.log('[IMAGE_DEBUG] Using existing URL, skipping base64 data');
+    }
+    // Only use base64 if no URL is available
+    else if ((!imageUrl || imageUrl === '') && lastImageMsg.content.data) {
+      console.log('[IMAGE_DEBUG] No URL found, using base64 data');
+      const mimeType = lastImageMsg.content.mimeType || 'image/jpeg';
+      // Properly convert BSON Binary to base64
+      let base64;
+      if (lastImageMsg.content.data.buffer) {
+        // BSON Binary (from .lean())
+        base64 = Buffer.from(lastImageMsg.content.data.buffer).toString('base64');
+      } else if (Buffer.isBuffer(lastImageMsg.content.data)) {
+        // Native Buffer (if not using .lean())
+        base64 = lastImageMsg.content.data.toString('base64');
+      } else if (typeof lastImageMsg.content.data === 'string') {
+        // Already a base64 string
+        base64 = lastImageMsg.content.data;
+      } else {
+        base64 = '';
+      }
+      // Check if base64 data is too large (more than 1MB)
+      if (base64.length > 1024 * 1024) {
+        console.log('[IMAGE_DEBUG] Base64 data too large, returning error');
+        return res.status(413).json({ 
+          success: false, 
+          message: 'Image data too large for API response',
+          error: 'Image exceeds maximum size for API response'
+        });
+      }
+      
+      imageUrl = `data:${mimeType};base64,${base64}`;
+      console.log('[IMAGE_DEBUG] Created base64 URL, length:', imageUrl.length);
+    } else {
+      console.log('[IMAGE_DEBUG] Using URL:', imageUrl);
+    }
+    
+    // Return image data similar to how videos are returned
+    const imageData = {
+      _id: lastImageMsg._id,
+      type: 'image',
+      chatId: lastImageMsg.chatId,
+      sender: lastImageMsg.sender,
+      createdAt: lastImageMsg.createdAt,
+      content: {
+        url: imageUrl,
+        type: 'image',
+        mimeType: lastImageMsg.content.mimeType || 'image/jpeg',
+        width: lastImageMsg.content.width || 0,
+        height: lastImageMsg.content.height || 0
+      },
+      metadata: lastImageMsg.metadata || {}
+    };
+    
+    // If we have a URL and it's not base64, don't include data field
+    if (imageUrl && !imageUrl.startsWith('data:')) {
+      console.log('[IMAGE_DEBUG] Using URL-based response, excluding base64 data');
+    } else {
+      console.log('[IMAGE_DEBUG] Using base64 response');
+    }
+    
+    // Log the final response size
+    const responseSize = JSON.stringify(imageData).length;
+    console.log('[IMAGE_DEBUG] Final response size:', responseSize, 'bytes');
+    
+    if (responseSize > 1024 * 1024) { // 1MB limit
+      console.log('[IMAGE_DEBUG] Response too large, returning error');
+      return res.status(413).json({ 
+        success: false, 
+        message: 'Image response too large',
+        error: 'Image data exceeds maximum response size'
+      });
+    }
+    
+    console.log('[IMAGE_DEBUG] Returning image data:', {
+      _id: imageData._id,
+      type: imageData.type,
+      chatId: imageData.chatId,
+      url: imageData.content.url
+    });
+    
+    res.json({ success: true, image: imageData });
+  } catch (error) {
+    console.error('Error fetching last image:', error);
+    res.status(500).json({ success: false, message: 'Error fetching last image', error: error.message });
+  }
+};
+
+const getLastVideoMessage = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    
+    console.log('[VIDEO_DEBUG] Fetching last video for chatId:', chatId);
+    
+    const lastVideoMsg = await Message.findOne({ chatId, type: 'video' })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    console.log('[VIDEO_DEBUG] Found video message:', lastVideoMsg ? {
+      _id: lastVideoMsg._id,
+      type: lastVideoMsg.type,
+      createdAt: lastVideoMsg.createdAt
+    } : 'null');
+    
+    if (!lastVideoMsg) {
+      console.log('[VIDEO_DEBUG] No video message found');
+      return res.json({ success: true, video: null });
+    }
+
+    // Return video data similar to how images are returned
+    const videoData = {
+      _id: lastVideoMsg._id,
+      type: 'video',
+      chatId: lastVideoMsg.chatId,
+      sender: lastVideoMsg.sender,
+      createdAt: lastVideoMsg.createdAt,
+      content: {
+        url: lastVideoMsg.content.url,
+        type: 'video',
+        mimeType: lastVideoMsg.content.mimeType || 'video/mp4',
+        thumbnail: lastVideoMsg.content.thumbnail || null,
+        duration: lastVideoMsg.content.duration || lastVideoMsg.metadata?.duration || 5
+      },
+      metadata: lastVideoMsg.metadata || {}
+    };
+
+    console.log('[VIDEO_DEBUG] Returning video data:', {
+      _id: videoData._id,
+      type: videoData.type,
+      url: videoData.content.url
+    });
+    
+    res.json({ success: true, video: videoData });
+  } catch (error) {
+    console.error('Error fetching last video:', error);
+    res.status(500).json({ success: false, message: 'Error fetching last video', error: error.message });
+  }
+};
+
+const getLastVoiceMessage = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const lastVoiceMsg = await Message.findOne({ chatId, type: 'voice' })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (!lastVoiceMsg) {
+      console.log('[VOICE_DEBUG] No voice message found for chatId:', chatId);
+      return res.json({ success: true, voice: null });
+    }
+    let voiceData = null;
+    if (lastVoiceMsg.content.data) {
+      const mimeType = lastVoiceMsg.content.mimeType || 'audio/m4a';
+      let base64;
+      
+      // Convert binary data to base64
+      if (Buffer.isBuffer(lastVoiceMsg.content.data)) {
+        base64 = lastVoiceMsg.content.data.toString('base64');
+      } else if (lastVoiceMsg.content.data.buffer) {
+        base64 = Buffer.from(lastVoiceMsg.content.data.buffer).toString('base64');
+      } else if (typeof lastVoiceMsg.content.data === 'string') {
+        base64 = lastVoiceMsg.content.data;
+      } else {
+        console.log('[VOICE_DEBUG] Unknown voice data format:', typeof lastVoiceMsg.content.data);
+        base64 = '';
+      }
+      
+      if (base64) {
+        voiceData = {
+          _id: lastVoiceMsg._id,
+          url: `data:${mimeType};base64,${base64}`,
+          mimeType,
+          duration: lastVoiceMsg.content.duration || lastVoiceMsg.metadata?.duration || null,
+          sender: lastVoiceMsg.sender,
+          createdAt: lastVoiceMsg.createdAt,
+          chatId: lastVoiceMsg.chatId
+        };
+        
+        console.log('[VOICE_DEBUG] Voice data prepared successfully:', {
+          voiceId: voiceData._id,
+          hasUrl: !!voiceData.url,
+          duration: voiceData.duration,
+          mimeType: voiceData.mimeType
+        });
+      }
+    } else {
+      console.log('[VOICE_DEBUG] lastVoiceMsg found but no content.data for chatId:', chatId);
+    }
+    
+    res.json({ success: true, voice: voiceData });
+  } catch (error) {
+    console.error('[VOICE_DEBUG] Error in getLastVoiceMessage:', error);
+    res.status(500).json({ success: false, message: 'Error fetching last voice', error: error.message });
+  }
+};
+
+const getAllVoiceMessagesForChat = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const voiceMessages = await Message.find({ chatId, type: 'voice' })
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ success: true, count: voiceMessages.length, messages: voiceMessages });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error fetching voice messages', error: error.message });
+  }
+};
+
+module.exports = {
+  getChats,
+  createChat,
+  getMessages,
+  sendMessage,
+  markAsRead,
+  getLastImageMessage,
+  getLastVideoMessage,
+  getLastVoiceMessage,
+  getAllVoiceMessagesForChat
+}; 

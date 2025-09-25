@@ -1,0 +1,238 @@
+const mongoose = require("mongoose");
+
+const connectionSchema = new mongoose.Schema({
+  users: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    role: {
+      type: String,
+      enum: ['owner', 'member'],
+      required: true
+    },
+    status: {
+      type: String,
+      enum: ['active', 'removed'],
+      default: 'active'
+    },
+    addedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    joinedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  markedLocations: [{
+    type: {
+      type: String,
+      enum: ['bus_station', 'hotel'],
+      required: true
+    },
+    name: {
+      type: String,
+      required: true
+    },
+    latitude: {
+      type: Number,
+      required: true
+    },
+    longitude: {
+      type: Number,
+      required: true
+    },
+    comment: {
+      type: String,
+      required: true,
+      maxlength: 200
+    },
+    distance: {
+      type: Number,
+      default: 0
+    },
+    images: [{
+      type: String,
+      required: true
+    }],
+    markedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    // NEW: Enhanced ownership tracking
+    isOwnerMarked: {
+      type: Boolean,
+      default: false
+    },
+    isPersonalMarked: {
+      type: Boolean,
+      default: false
+    },
+    // NEW: Scope definition for group vs personal
+    scope: {
+      type: {
+        type: String,
+        enum: ['group', 'personal'],
+        required: true
+      },
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null // null for group, userId for personal
+      },
+      isOwnerPersonal: {
+        type: Boolean,
+        default: false // true when owner's group marking becomes personal
+      }
+    },
+    markedAt: {
+      type: Date,
+      default: Date.now
+    },
+    updatedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  metadata: {
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    lastActivity: {
+      type: Date,
+      default: Date.now
+    },
+    connectionType: {
+      type: String,
+      enum: ['qr'],
+      default: 'qr'
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active'
+    }
+  }
+}, { 
+  timestamps: true
+});
+
+// Ensure connection has exactly one owner and no duplicate users
+connectionSchema.pre('save', async function(next) {
+  try {
+    if (!this.users || !Array.isArray(this.users)) {
+      throw new Error('Users must be an array');
+    }
+
+    if (this.users.length < 2) {
+      throw new Error('Connection must have at least two users');
+    }
+    
+    // Check for duplicate users
+    const userIds = this.users.map(u => u.userId.toString());
+    if (new Set(userIds).size !== userIds.length) {
+      throw new Error('Connection cannot have duplicate users');
+    }
+
+    // Validate user roles - must have exactly one owner
+    const owners = this.users.filter(u => u.role === 'owner');
+    if (owners.length !== 1) {
+      throw new Error('Connection must have exactly one owner');
+    }
+
+    // Check if any user is already in another active connection
+    for (const user of this.users) {
+      const existingConnection = await this.constructor.findOne({
+        'users.userId': user.userId,
+        'users.status': 'active',
+        'metadata.status': 'active',
+        _id: { $ne: this._id } // Exclude current connection when updating
+      });
+
+      if (existingConnection) {
+        throw new Error(`User ${user.userId} is already in an active connection`);
+      }
+    }
+
+    // Ensure all ObjectIds are valid
+    for (const user of this.users) {
+      if (!mongoose.Types.ObjectId.isValid(user.userId)) {
+        throw new Error('Invalid user ID format');
+      }
+      if (user.addedBy && !mongoose.Types.ObjectId.isValid(user.addedBy)) {
+        throw new Error('Invalid addedBy ID format');
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Static method to find all connections for a user
+connectionSchema.statics.findUserConnections = async function(userId) {
+  const connections = await this.find({
+    'users.userId': userId,
+    'users.status': 'active',
+    'metadata.status': 'active'
+  })
+  .populate({
+    path: 'users.userId',
+    select: 'name username qrCode image',
+    model: 'User'
+  })
+  .lean()
+  .exec();
+
+  // Filter to ensure user is actually in each connection with active status
+  return connections.filter(connection => {
+    const userInConnection = connection.users.find(u => 
+      u.userId.toString() === userId.toString() && u.status === 'active'
+    );
+    return userInConnection;
+  });
+};
+
+// Static method to check if a user is in any active connection
+connectionSchema.statics.isUserInConnection = async function(userId) {
+  const connection = await this.findOne({
+    'users.userId': userId,
+    'users.status': 'active',
+    'metadata.status': 'active'
+  });
+  
+  if (connection) {
+    const userInConnection = connection.users.find(u => 
+      u.userId.toString() === userId.toString() && u.status === 'active'
+    );
+    return !!userInConnection;
+  }
+  return false;
+};
+
+// Static method to get user's active connection
+connectionSchema.statics.getUserActiveConnection = async function(userId) {
+  return this.findOne({
+    'users.userId': userId,
+    'users.status': 'active',
+    'metadata.status': 'active'
+  }).then(connection => {
+    // Additional check to ensure the user is actually in the connection with active status
+    if (connection) {
+      const userInConnection = connection.users.find(u => 
+        u.userId.toString() === userId.toString() && u.status === 'active'
+      );
+      return userInConnection ? connection : null;
+    }
+    return null;
+  });
+};
+
+const Connection = mongoose.model("Connection", connectionSchema);
+
+module.exports = Connection; 

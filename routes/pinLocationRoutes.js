@@ -19,7 +19,7 @@ const storage = multer.diskStorage({
 const upload = multer({ 
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 20 * 1024 * 1024, // 20MB limit (same as general upload)
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
@@ -40,7 +40,12 @@ router.get('/connection/:connectionId', auth, pinLocationController.getPinLocati
 router.get('/:pinId', auth, pinLocationController.getPinLocation);
 
 // Update a pin location (supports partial updates)
-router.put('/:pinId', auth, upload.array('images', 2), pinLocationController.updatePinLocation);
+router.put('/:pinId', auth, (req, res, next) => {
+  console.log('[PIN_ROUTE_DEBUG] PUT request received for pinId:', req.params.pinId);
+  console.log('[PIN_ROUTE_DEBUG] Files in request:', req.files?.length || 0);
+  console.log('[PIN_ROUTE_DEBUG] Multer limits:', upload.limits);
+  next();
+}, upload.array('images', 2), pinLocationController.updatePinLocation);
 
 // Delete a pin location
 router.delete('/:pinId', auth, pinLocationController.deletePinLocation);

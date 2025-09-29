@@ -193,7 +193,92 @@ const userSchema = new mongoose.Schema({
       type: Date,
       default: Date.now
     }
-  }]
+  }],
+  // NEW: Simple personal locations for bus and hotel
+  personalLocations: {
+    bus: {
+      name: {
+        type: String,
+        default: null
+      },
+      address: {
+        type: String,
+        default: null
+      },
+      latitude: {
+        type: Number,
+        default: null
+      },
+      longitude: {
+        type: Number,
+        default: null
+      },
+      comment: {
+        type: String,
+        default: null
+      },
+      images: [{
+        type: String,
+        default: []
+      }],
+      markedAt: {
+        type: Date,
+        default: null
+      },
+      isActive: {
+        type: Boolean,
+        default: false
+      },
+      source: {
+        type: String,
+        enum: ['personal', 'group'],
+        default: 'personal'
+      }
+    },
+    hotel: {
+      name: {
+        type: String,
+        default: null
+      },
+      address: {
+        type: String,
+        default: null
+      },
+      latitude: {
+        type: Number,
+        default: null
+      },
+      longitude: {
+        type: Number,
+        default: null
+      },
+      comment: {
+        type: String,
+        default: null
+      },
+      roomNo: {
+        type: String,
+        default: null
+      },
+      images: [{
+        type: String,
+        default: []
+      }],
+      markedAt: {
+        type: Date,
+        default: null
+      },
+      isActive: {
+        type: Boolean,
+        default: false
+      },
+      source: {
+        type: String,
+        enum: ['personal', 'group'],
+        default: 'personal'
+      }
+    }
+  }
 }, {
   timestamps: true
 });

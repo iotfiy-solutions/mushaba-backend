@@ -9,7 +9,7 @@ module.exports = {
     max_memory_restart: '1G',
     env: {
       NODE_ENV: 'development',
-      PORT: 3000,
+      PORT: 5000,
       // Leave LID_PYTHON unset - let lid.js auto-detect the venv
       // It will find .venv/Scripts/python.exe on Windows or .venv/bin/python on Linux
       LID_MODEL: 'small',
@@ -20,7 +20,7 @@ module.exports = {
     },
     env_production: {
       NODE_ENV: 'production',
-      PORT: 8080,
+      PORT: 5000,
       // For Linux production
       LID_PYTHON: '/opt/lid-venv/bin/python',
       LID_MODEL: 'small',

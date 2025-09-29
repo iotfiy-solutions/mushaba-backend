@@ -64,6 +64,8 @@ app.use('/api/speech', speechRouter);
 // New marked locations routes
 app.use('/api/user-marked-locations', require('./routes/userMarkedLocationsRoutes'));
 app.use('/api/connection-marked-locations', require('./routes/connectionMarkedLocationsRoutes'));
+// NEW: Bus and Hotel Location routes
+app.use('/api/bus-hotel-locations', require('./routes/busHotelLocationRoutes'));
 // QR Users routes - inline to avoid import issues
 app.get('/api/qr-users', auth, (req, res) => {
   const qrUsersController = require('./controllers/qrUsersControllerSimple');
@@ -88,6 +90,12 @@ app.delete('/api/qr-users/:qrUserId', auth, (req, res) => {
 app.put('/api/qr-users/current-user/update', auth, (req, res) => {
   const qrUsersController = require('./controllers/qrUsersControllerSimple');
   qrUsersController.updateCurrentUserQR(req, res);
+});
+
+// Dynamic QR HTML route - serves QR user data as HTML
+app.get('/qr/:userId', (req, res) => {
+  const qrUsersController = require('./controllers/qrUsersControllerSimple');
+  qrUsersController.getQRUserHTML(req, res);
 });
 
 // Start memory cleanup service

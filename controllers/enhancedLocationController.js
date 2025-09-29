@@ -5,7 +5,7 @@
 
 const Connection = require('../models/Connection');
 const User = require('../models/User');
-const Location = require('../models/Location');
+const { ConnectionLocation } = require('../models/Location');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -540,7 +540,7 @@ const deleteMarkedLocation = async (req, res) => {
     });
 
     // Find the location in the database
-    const location = await Location.findById(locationId);
+    const location = await ConnectionLocation.findById(locationId);
     if (!location) {
       return res.status(404).json({
         success: false,
@@ -558,7 +558,7 @@ const deleteMarkedLocation = async (req, res) => {
     }
 
     // Delete the location
-    await Location.findByIdAndDelete(locationId);
+    await ConnectionLocation.findByIdAndDelete(locationId);
 
     // Find the connection to update user cache
     const connection = await Connection.findOne({

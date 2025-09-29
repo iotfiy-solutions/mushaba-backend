@@ -133,6 +133,31 @@ router.post('/register', async (req, res) => {
     await user.save();
     console.log('User saved successfully:', user._id);
 
+    // Create personal chat for the new user
+    try {
+      const Chat = require('../models/Chat');
+      const personalChat = new Chat({
+        type: 'personal',
+        participants: [{
+          userId: user._id,
+          status: 'active',
+          joinTimestamp: new Date()
+        }],
+        metadata: {
+          name: 'Personal Chat',
+          description: 'Your personal chat for notes and media',
+          isPersonal: true
+        }
+      });
+      
+      await personalChat.save();
+      console.warn('? [PERSONAL_CHAT] Personal chat created for user:', user._id, 'Chat ID:', personalChat._id);
+    } catch (chatError) {
+      console.warn('? [PERSONAL_CHAT] Error creating personal chat:', chatError.message);
+      console.warn('? [PERSONAL_CHAT] Full error:', chatError);
+      // Don't fail registration if chat creation fails
+    }
+
     // Create token
     const token = user.getSignedJwtToken();
     console.log('Token generated successfully');

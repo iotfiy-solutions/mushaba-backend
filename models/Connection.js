@@ -116,6 +116,91 @@ const connectionSchema = new mongoose.Schema({
       enum: ['active', 'inactive'],
       default: 'active'
     }
+  },
+  // NEW: Simple group locations for bus and hotel
+  groupLocations: {
+    bus: {
+      name: {
+        type: String,
+        default: null
+      },
+      address: {
+        type: String,
+        default: null
+      },
+      latitude: {
+        type: Number,
+        default: null
+      },
+      longitude: {
+        type: Number,
+        default: null
+      },
+      comment: {
+        type: String,
+        default: null
+      },
+      images: [{
+        type: String,
+        default: []
+      }],
+      markedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      markedAt: {
+        type: Date,
+        default: null
+      },
+      isActive: {
+        type: Boolean,
+        default: false
+      }
+    },
+    hotel: {
+      name: {
+        type: String,
+        default: null
+      },
+      address: {
+        type: String,
+        default: null
+      },
+      latitude: {
+        type: Number,
+        default: null
+      },
+      longitude: {
+        type: Number,
+        default: null
+      },
+      comment: {
+        type: String,
+        default: null
+      },
+      roomNo: {
+        type: String,
+        default: null
+      },
+      images: [{
+        type: String,
+        default: []
+      }],
+      markedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      markedAt: {
+        type: Date,
+        default: null
+      },
+      isActive: {
+        type: Boolean,
+        default: false
+      }
+    }
   }
 }, { 
   timestamps: true

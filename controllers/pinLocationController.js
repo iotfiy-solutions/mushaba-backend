@@ -353,6 +353,12 @@ const updatePinLocation = async (req, res) => {
       userId,
       filesCount: req.files?.length || 0
     });
+    
+    // Debug multer configuration
+    console.log('[UPDATE_PIN_LOCATION] Multer limits:', {
+      fileSize: req.app.get('multer')?.limits?.fileSize || 'not set',
+      files: req.files?.map(f => ({ filename: f.filename, size: f.size, mimetype: f.mimetype })) || []
+    });
 
     // Find pin location
     const pinLocation = await PinLocation.findById(pinId);

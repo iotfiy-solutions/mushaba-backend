@@ -22,6 +22,11 @@ const QRUsersSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  hotelName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   hotelCoordinates: {
     latitude: {
       type: Number,
@@ -36,6 +41,11 @@ const QRUsersSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
+  },
+  busName: {
+    type: String,
+    trim: true,
+    default: ''
   },
   busCoordinates: {
     latitude: {

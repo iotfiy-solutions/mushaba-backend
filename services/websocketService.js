@@ -371,6 +371,22 @@ class WebSocketService {
       }
     });
 
+    // NEW: Bus and Hotel Location events
+    socket.on('busHotelLocationUpdated', (data) => {
+      const { connectionId, type, scope, userId, locationData, action } = data;
+      if (connectionId) {
+        console.warn('🚌 [WEBSOCKET] Bus/Hotel location update:', { type, scope, action, userId });
+        this.io.to(`connection:${connectionId}`).emit('busHotelLocationUpdated', {
+          type,
+          scope,
+          userId,
+          locationData,
+          action,
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+
     // NEW: Ownership transfer events
     socket.on('ownershipTransferred', (data) => {
       const { connectionId, newOwnerId, oldOwnerId, choices } = data;

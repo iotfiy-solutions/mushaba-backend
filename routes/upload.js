@@ -42,7 +42,12 @@ const upload = multer({
 // Upload file
 router.post('/', protect, upload.single('file'), async (req, res) => {
   try {
+    console.log('Upload endpoint hit - req.file:', req.file);
+    console.log('Upload endpoint hit - req.body:', req.body);
+    console.log('Upload endpoint hit - req.headers:', req.headers);
+    
     if (!req.file) {
+      console.log('No file uploaded');
       return res.status(400).json({
         success: false,
         message: 'No file uploaded'
@@ -50,6 +55,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
     }
 
     const fileUrl = `/uploads/${req.file.filename}`;
+    console.log('File uploaded successfully:', fileUrl);
 
     res.json({
       success: true,
@@ -64,7 +70,6 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       success: false,
       message: 'Error uploading file'
     });
-
   }
 });
 
